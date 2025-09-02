@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CMD Job Folder Builder CLI (No-AI)
+CMD Job Folder Builder CLI
 
 Implements WI Execution Steps 5.0–5.11 for PO Processing, Folder Creation,
 and Form Pre-population.

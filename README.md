@@ -1,4 +1,4 @@
-## CMD Job Folder Builder (No-AI)
+## CMD Job Folder Builder
 
 Deterministic Python CLI that reproduces the “perfect job folder” workflow for CMD jobs per WI steps 5.0–5.11.
 

@@ -1,0 +1,37 @@
+### JobFolderCreation — Quick Work Instruction (Windows)
+
+### First-time setup in powershell (do once)
+```
+cd "C:\\Users\\Ethan Nguyen\\Desktop\\JobFolderCreation"
+py -3 -m venv .venv
+.\\.venv\\Scripts\\python.exe -m pip install --upgrade pip
+.\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt
+```
+
+### Run the app in powershell (every time)
+```
+cd "C:\\Users\\**Ethan Nguyen**\\Desktop\\JobFolderCreation"
+.\\.venv\\Scripts\\python.exe web\_app.py
+```
+- Open `http://localhost:5000` in your browser.
+- Stop the app: press Ctrl + C in PowerShell.
+
+### If something goes wrong
+- “No module named 'flask'”: you’re not using the venv. Start the app with:
+```powershell
+
+.\\.venv\\Scripts\\python.exe web\_app.py
+
+```
+
+- Update packages:
+```
+.\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt
+```
+
+- Verify Flask version (optional):
+```powershell
+.\\.venv\\Scripts\\python.exe -c "import flask; print(flask.\_\_version\_\_)"
+```
+
+- Paths and variable names in templates must match what the code expects; changing only visual content is fine.

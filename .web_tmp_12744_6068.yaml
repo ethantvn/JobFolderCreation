@@ -1,0 +1,9 @@
+cmd_rel_path: docs\CMD
+dropbox_root: ''
+fake_825_root: ./templates
+job_folder_name: J-25-B124 (VSR)
+job_number: J-25-B124
+reset_sc_on_rerun: true
+run_data_root: P:\2025 Run Data
+sterile: true
+templates_map_path: ./maps/MBR Template Map.xlsx

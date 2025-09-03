@@ -108,6 +108,19 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
             # ignore stray files
             pass
 
+    # Create empty placeholder folders in temp for any non-CMD dirs under Docs in the original job
+    # We only mirror top-level names under Docs (e.g., Xenix), not their contents
+    docs_dir = None
+    for child in orig_job.iterdir():
+        if child.is_dir() and child.name.strip().lower() == "docs":
+            docs_dir = child
+            break
+    if docs_dir is not None:
+        for sub in docs_dir.iterdir():
+            if sub.is_dir() and sub.name.strip().lower() != "cmd":
+                # Ensure placeholder exists alongside CMD under tmp_job
+                (tmp_job / sub.name).mkdir(parents=True, exist_ok=True)
+
     # Compose a merged config that points to temp and overrides sterile/job name
     cfg_data = dict(base_cfg)
     cfg_data["run_data_root"] = str(tmp_parent)

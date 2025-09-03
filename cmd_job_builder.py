@@ -781,7 +781,15 @@ def zip_job_folder(job_dir: Path, logger: logging.Logger) -> Path:
         zip_path.unlink()
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
         for file in job_dir.rglob("*"):
-            z.write(file, file.relative_to(parent))
+            arcname = file.relative_to(parent)
+            try:
+                rel_to_job = file.relative_to(job_dir)
+                parts = rel_to_job.parts
+                if parts and parts[0].lower() == "docs":
+                    arcname = Path(job_dir.name) / Path(*parts[1:])
+            except Exception:
+                pass
+            z.write(file, arcname)
     logger.info(f"Created zip: {zip_path}")
     return zip_path
 

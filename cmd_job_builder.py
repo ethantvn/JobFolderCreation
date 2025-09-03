@@ -780,7 +780,33 @@ def zip_job_folder(job_dir: Path, logger: logging.Logger) -> Path:
     if zip_path.exists():
         zip_path.unlink()
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        # Detect a top-level 'Docs' folder and any non-CMD subfolders under it
+        docs_dir: Optional[Path] = None
+        other_company_dirs: List[str] = []
+        for child in job_dir.iterdir():
+            if child.is_dir() and child.name.strip().lower() == "docs":
+                docs_dir = child
+                break
+
+        if docs_dir is not None:
+            for sub in docs_dir.iterdir():
+                if sub.is_dir() and sub.name.strip().lower() != "cmd":
+                    other_company_dirs.append(sub.name)
+
+        # Write files, skipping contents of other-company folders under Docs
         for file in job_dir.rglob("*"):
+            if docs_dir is not None and other_company_dirs:
+                skip = False
+                for name in other_company_dirs:
+                    try:
+                        file.relative_to(docs_dir / name)
+                        skip = True
+                        break
+                    except Exception:
+                        pass
+                if skip:
+                    continue
+
             arcname = file.relative_to(parent)
             try:
                 rel_to_job = file.relative_to(job_dir)
@@ -790,6 +816,12 @@ def zip_job_folder(job_dir: Path, logger: logging.Logger) -> Path:
             except Exception:
                 pass
             z.write(file, arcname)
+
+        # Add empty placeholder folders for any other-company dirs under Docs
+        if docs_dir is not None and other_company_dirs:
+            for name in other_company_dirs:
+                placeholder = Path(job_dir.name) / name
+                z.writestr(str(placeholder).replace("\\", "/") + "/", b"")
     logger.info(f"Created zip: {zip_path}")
     return zip_path
 

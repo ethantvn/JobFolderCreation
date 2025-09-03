@@ -5,5 +5,5 @@ run_data_root: 'P:\2025 Run Data'
 templates_map_path: './maps/MBR Template Map.xlsx'
 fake_825_root: './templates'
 dropbox_root: ""                  # optional, can remain blank
-cmd_rel_path: 'docs\CMD'               # subfolder under job folder
+cmd_rel_path: 'CMD'               # subfolder under job folder
 reset_sc_on_rerun: true           # re-copy S&C each run

@@ -190,7 +190,37 @@ def parse_items_from_po_pdf(pdf_path: Path, logger: logging.Logger) -> List[Item
         r"^\s*(?P<qty>\d{1,3}(?:,\d{3})*|\d+)\s+(?P<item>[A-Za-z0-9._\-]+)\s+(?P<details>.+?)\s+(?P<version>\d+)(?:\s|$)"
     )
 
-    aggregated: "OrderedDict[str, ItemRow]" = OrderedDict()
+    # Preserve PO order; aggregate only for letter-prefixed items
+    items: List[ItemRow] = []
+    first_index_by_letter_item: Dict[str, int] = {}
+
+    def add_or_aggregate(item_code: str, quantity: int, details: str, version_table: str) -> None:
+        nonlocal items, first_index_by_letter_item
+        if re.match(r"^[A-Za-z]\.", item_code):
+            key = item_code
+            if key in first_index_by_letter_item:
+                items[first_index_by_letter_item[key]].quantity += quantity
+            else:
+                first_index_by_letter_item[key] = len(items)
+                items.append(
+                    ItemRow(
+                        item_code=item_code,
+                        quantity=quantity,
+                        details=details,
+                        version_table=version_table,
+                    )
+                )
+        else:
+            # Numeric/tool items: record every occurrence as its own row
+            items.append(
+                ItemRow(
+                    item_code=item_code,
+                    quantity=quantity,
+                    details=details,
+                    version_table=version_table,
+                )
+            )
+
     for line in lines:
         m = row_re.match(line)
         if not m:
@@ -207,22 +237,7 @@ def parse_items_from_po_pdf(pdf_path: Path, logger: logging.Logger) -> List[Item
         details = m.group("details").strip()
         version_table = m.group("version").strip()
 
-        if item_code in aggregated:
-            aggregated[item_code].quantity += quantity
-            # Keep earliest details; if different, log once
-            if aggregated[item_code].details != details:
-                logger.warning(
-                    f"Conflicting details for {item_code}; keeping first. Later: '{details}'"
-                )
-        else:
-            aggregated[item_code] = ItemRow(
-                item_code=item_code,
-                quantity=quantity,
-                details=details,
-                version_table=version_table,
-            )
-
-    items = list(aggregated.values())
+        add_or_aggregate(item_code, quantity, details, version_table)
     logger.debug(f"Parsed {len(items)} unique items from {pdf_path.name}")
     if not items:
         # Emit some diagnostic lines to help tune the regex
@@ -246,7 +261,8 @@ def parse_items_from_po_pdf(pdf_path: Path, logger: logging.Logger) -> List[Item
             r"(?P<item>[A-Za-z]\.[A-Za-z0-9.]+|\d{3,5}(?:\.\d+){0,2})\s+"
             r"(?P<details>.+?)\s+(?P<version>\d{1,3})(?=\s+(?:\d{1,2}/\d{1,2}/\d{2,4}|\$|\d|$))"
         )
-        aggregated2: "OrderedDict[str, ItemRow]" = OrderedDict()
+        # Second pass: build items similarly, preserving duplicates for numerics
+        temp_items: List[Tuple[str, int, str, str]] = []
         for m in multi_re.finditer(block):
             item_code = m.group("item").strip()
             if re.fullmatch(r"aprevo\d+", item_code, flags=re.IGNORECASE):
@@ -254,18 +270,13 @@ def parse_items_from_po_pdf(pdf_path: Path, logger: logging.Logger) -> List[Item
             qty = int(m.group("qty").replace(",", ""))
             details = re.sub(r"\s+", " ", m.group("details").strip())
             version_table = m.group("version").strip()
-            if item_code in aggregated2:
-                aggregated2[item_code].quantity += qty
-            else:
-                aggregated2[item_code] = ItemRow(
-                    item_code=item_code,
-                    quantity=qty,
-                    details=details,
-                    version_table=version_table,
-                )
-        if aggregated2:
-            items = list(aggregated2.values())
-            logger.debug(f"Parsed {len(items)} unique items (multiline) from {pdf_path.name}")
+            temp_items.append((item_code, qty, details, version_table))
+        if temp_items:
+            items = []
+            first_index_by_letter_item = {}
+            for ic, q, de, vt in temp_items:
+                add_or_aggregate(ic, q, de, vt)
+            logger.debug(f"Parsed {len(items)} items (multiline) from {pdf_path.name}")
     return items
 
 

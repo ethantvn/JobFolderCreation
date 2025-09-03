@@ -178,8 +178,8 @@ def index():
     except Exception as e:
         return render_template_string(TEMPLATE, error=f"Unexpected error: {e}")
 
-    # Stream zip bytes directly (no persistent file)
-    return send_file(io.BytesIO(data), as_attachment=True, download_name="job_build.zip")
+    # Stream zip bytes directly (no persistent file) – name it the job folder
+    return send_file(io.BytesIO(data), as_attachment=True, download_name=f"{job_folder_name}.zip")
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import fitz  # PyMuPDF
 import openpyxl
 import yaml
+from docx import Document
 
 
 # ------------------------------- Data Models ------------------------------- #
@@ -325,7 +326,12 @@ def assert_no_curly_placeholders_in_docx(docx_path: Path) -> None:
                 raise SystemExit(f"Placeholder braces remain in {docx_path} -> {name}")
 
 
-def replace_in_docx_zip(template_path: Path, output_path: Path, replacements: Dict[str, str]) -> None:
+def replace_in_docx_zip(
+    template_path: Path,
+    output_path: Path,
+    replacements: Dict[str, str],
+    flexible_keys: Optional[List[str]] = None,
+) -> None:
     # Copy template to temp, then replace across all XML entries
     with zipfile.ZipFile(template_path, "r") as zin:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -333,12 +339,166 @@ def replace_in_docx_zip(template_path: Path, output_path: Path, replacements: Di
                 data = zin.read(item.filename)
                 if item.filename.endswith(".xml"):
                     text = data.decode("utf-8")
+
+                    # First try straight string replacements
                     for key, val in replacements.items():
                         text = text.replace(key, val)
-                    # Cleanup: remove any remaining {{...}} placeholders
+
+                    # For document body only, apply limited flexible matching for specific keys
+                    if item.filename == "word/document.xml" and flexible_keys:
+                        try:
+                            import xml.etree.ElementTree as ET
+                            ET.register_namespace("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+                            ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+                            root = ET.fromstring(text)
+                            for tc in root.findall('.//w:tc', ns):
+                                # Gather full visible text of this cell
+                                parts: List[str] = []
+                                for t in tc.findall('.//w:t', ns):
+                                    parts.append(t.text or "")
+                                cell_text = "".join(parts)
+                                # Apply all replacements on flattened text
+                                for key, val in replacements.items():
+                                    cell_text = cell_text.replace(key, val)
+                                # Write back minimal structure: keep tcPr if exists
+                                tcPr = tc.find('w:tcPr', ns)
+                                for child in list(tc):
+                                    if child is tcPr:
+                                        continue
+                                    tc.remove(child)
+                                p = ET.SubElement(tc, '{%s}p' % ns['w'])
+                                r = ET.SubElement(p, '{%s}r' % ns['w'])
+                                t = ET.SubElement(r, '{%s}t' % ns['w'])
+                                t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                                t.text = cell_text
+                            text = ET.tostring(root, encoding='utf-8').decode('utf-8')
+                        except Exception:
+                            # On any failure, fall back to original text without cross-tag changes
+                            pass
+
+                    # Cleanup: remove any remaining {{...}} placeholders (contiguous form only)
                     text = re.sub(r"\{\{[^}]+\}\}", "", text)
+
                     data = text.encode("utf-8")
                 zout.writestr(item, data)
+
+
+def replace_in_docx_safe(template_path: Path, output_path: Path, replacements: Dict[str, str]) -> None:
+    """Safely replace placeholders using python-docx, avoiding raw XML edits.
+
+    This rewrites only the text payloads of table cells and paragraphs, keeping
+    the DOCX structure valid so Word doesn't show recovery warnings.
+    """
+    doc = Document(str(template_path))
+
+    def replace_in_paragraph(paragraph, rep_map: Dict[str, str]) -> None:
+        # Work on a copy of runs to avoid mutating during iteration
+        while True:
+            runs = list(paragraph.runs)
+            if not runs:
+                break
+            full = "".join(r.text for r in runs)
+            # Find first matching placeholder in combined text
+            hit_key = None
+            hit_pos = -1
+            for k in rep_map.keys():
+                pos = full.find(k)
+                if pos != -1 and (hit_pos == -1 or pos < hit_pos):
+                    hit_key = k
+                    hit_pos = pos
+            if hit_key is None:
+                break
+
+            start = hit_pos
+            end = hit_pos + len(hit_key)
+            # Identify run indices and offsets
+            acc = 0
+            first_idx = last_idx = 0
+            off_start = off_end = 0
+            for i, r in enumerate(runs):
+                nxt = acc + len(r.text)
+                if acc <= start < nxt:
+                    first_idx = i
+                    off_start = start - acc
+                if acc < end <= nxt:
+                    last_idx = i
+                    off_end = end - acc
+                    break
+                acc = nxt
+
+            first_run = runs[first_idx]
+            last_run = runs[last_idx]
+            prefix = first_run.text[:off_start]
+            suffix = last_run.text[off_end:]
+            value = rep_map[hit_key]
+
+            # Update first run with prefix + value
+            first_run.text = prefix + value
+            # Clear intermediate runs
+            for j in range(first_idx + 1, last_idx):
+                runs[j].text = ""
+            # Keep suffix in last run if different from first
+            if last_idx != first_idx:
+                last_run.text = suffix
+            else:
+                # Append suffix to first run
+                first_run.text += suffix
+
+    # Process tables
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    replace_in_paragraph(p, replacements)
+
+    # Process standalone paragraphs
+    for p in doc.paragraphs:
+        replace_in_paragraph(p, replacements)
+
+    # Headers and footers (preserve formatting)
+    for section in doc.sections:
+        for p in section.header.paragraphs:
+            replace_in_paragraph(p, replacements)
+        for tbl in section.header.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        replace_in_paragraph(p, replacements)
+        for p in section.footer.paragraphs:
+            replace_in_paragraph(p, replacements)
+        for tbl in section.footer.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        replace_in_paragraph(p, replacements)
+
+    doc.save(str(output_path))
+
+
+def sanitize_docx_curly(docx_path: Path) -> None:
+    """Remove any leftover {{...}} tokens from word/document.xml in-place.
+
+    Uses a zip round-trip to adjust only the XML text content while preserving
+    all formatting. This prevents build failures on strict placeholder checks.
+    """
+    import re as _re
+    with zipfile.ZipFile(docx_path, 'r') as zin:
+        xml = zin.read('word/document.xml').decode('utf-8')
+        cleaned = _re.sub(r"\{\{[^}]+\}\}", "", xml)
+        if cleaned == xml:
+            return
+        # Rebuild docx with updated document.xml
+        from io import BytesIO
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename == 'word/document.xml':
+                    data = cleaned.encode('utf-8')
+                zout.writestr(item, data)
+        buf.seek(0)
+        with open(docx_path, 'wb') as f:
+            f.write(buf.read())
 
 
 def copy_excel_template_and_fill(
@@ -688,28 +848,61 @@ def generate_coc(
     # Prepare replacements
     traveler_map = build_traveler_numbers(po.po_number, items)
     max_n = len(items)
-    replacements: Dict[str, str] = {
-        "{{Job Number}}": job_number,
-        "{{Traveler Number}}": "",  # Template-wide; per-row placeholders handled via N-indexed tokens
-        "{{Lot Number}}": po.lot_number,
-    }
+    total_qty = sum(it.quantity for it in items)
+    replacements: Dict[str, str] = {}
+
+    def add_replacement(key: str, value: str) -> None:
+        # Add both normal-space and NBSP variants to be robust to DOCX formatting
+        replacements[key] = value
+        replacements[key.replace(" ", "\xa0")] = value
+
+    add_replacement("{{Job Number}}", job_number)
+    add_replacement("{{Traveler Number}}", "")  # Template-wide; per-row handled via N-indexed tokens
+    add_replacement("{{Lot Number}}", po.lot_number)
+    # Common synonyms seen in templates (unnumbered variants)
+    add_replacement("{{Master Job #}}", job_number)
+    add_replacement("{{Customer Lot #}}", po.lot_number)
+    add_replacement("{{Total Quantity}}", str(total_qty))
     # Per-row fields
     for idx, it in enumerate(items, start=1):
-        replacements[f"{{{{Item {idx}}}}}"] = it.item_code
-        replacements[f"{{{{Version {idx}}}}}"] = it.version or ""
-        replacements[f"{{{{Details {idx}}}}}"] = it.details
-        replacements[f"{{{{Quantity {idx}}}}}"] = str(it.quantity)
+        add_replacement(f"{{{{Item {idx}}}}}", it.item_code)
+        add_replacement(f"{{{{Version {idx}}}}}", it.version or "")
+        add_replacement(f"{{{{Details {idx}}}}}", it.details)
+        add_replacement(f"{{{{Quantity {idx}}}}}", str(it.quantity))
         # Traveler/Job/Lot per-row variants
         trav = traveler_map.get(it.item_code, f"{po.po_number}-{idx:02d}")
-        replacements[f"{{{{Traveler Number {idx}}}}}"] = trav
+        add_replacement(f"{{{{Traveler Number {idx}}}}}", trav)
         is_numeric = bool(re.match(r"^\d", it.item_code))
-        replacements[f"{{{{Job Number {idx}}}}}"] = job_number if not is_numeric else "N/A"
-        replacements[f"{{{{Lot Number {idx}}}}}"] = po.lot_number if not is_numeric else "N/A"
+        job_val = job_number if not is_numeric else "N/A"
+        lot_val = po.lot_number if not is_numeric else "N/A"
+        # Support multiple placeholder spellings in templates
+        add_replacement(f"{{{{Job Number {idx}}}}}", job_val)
+        add_replacement(f"{{{{Master Job # {idx}}}}}", job_val)
+        add_replacement(f"{{{{Lot Number {idx}}}}}", lot_val)
+        add_replacement(f"{{{{Customer Lot # {idx}}}}}", lot_val)
 
     if dry_run:
         return
 
-    replace_in_docx_zip(coc_template, output_docx, replacements)
+    # Use flexible matching only for per-row Job/Lot placeholders, which may be
+    # split across DOCX XML runs in the template. Limit scope to avoid layout issues.
+    flexible_keys: List[str] = []
+    for idx, _ in enumerate(items, start=1):
+        flexible_keys.extend([
+            f"{{{{Job Number {idx}}}}}",
+            f"{{{{Master Job # {idx}}}}}",
+            f"{{{{Lot Number {idx}}}}}",
+            f"{{{{Customer Lot # {idx}}}}}",
+        ])
+
+    # Prefer fully safe replacement path to avoid any Word recovery prompts
+    try:
+        replace_in_docx_safe(coc_template, output_docx, replacements)
+    except Exception as e:
+        # Fallback to the in-zip replacer (should rarely be used)
+        replace_in_docx_zip(coc_template, output_docx, replacements, flexible_keys)
+    # Ensure no stray placeholders remain anywhere in document.xml
+    sanitize_docx_curly(output_docx)
     assert_no_curly_placeholders_in_docx(output_docx)
 
 

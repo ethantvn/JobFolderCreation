@@ -1,67 +1,62 @@
 ﻿### JobFolderCreation — Quick Work Instruction (Windows)
 
-### 0 Install Python (if you don't have it)
-- Option A — winget (recommended on Windows 10/11):
-```powershell
-winget install -e --id Python.Python.3.12
-```
-- Option B — installer:
+ - Python Install:
   1 Open https://www.python.org/downloads/windows/
   2 Download "Windows installer (64-bit)" for Python 3.x
   3 Run the installer and check "Add python.exe to PATH"
   4 Close and reopen PowerShell
 
 - Verify installation:
-```powershell
+``
 python --version
 py --version
 python -m pip --version
-```
+``
 If pip is missing:
-```powershell
+``
 python -m ensurepip --upgrade
-```
+``
 
-### 1 First-time setup in PowerShell (do once)
-```powershell
-cd "C:\Users\Ethan Nguyen\Desktop\JobFolderCreation"
+### 1 First-time setup in PowerShell (do once) (change name)
+``
+cd "C:\Users\Mark Unwin\Desktop\JobFolderCreation-main"
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+``
 
-### 2 Run the app in PowerShell (every time)
-```powershell
-cd "C:\Users\Ethan Nguyen\Desktop\JobFolderCreation"
+### 2 Run the app in PowerShell (every time) (change name)
+``
+cd "C:\Users\Mark Unwin\Desktop\JobFolderCreation-main"
 .\.venv\Scripts\python.exe web_app.py
-```
+``
 - Open http://localhost:5000 in your browser
 - Stop the app: press Ctrl + C in PowerShell
 
 ### 3 Optional: activate the virtual environment
 If activation is blocked, allow scripts for this session, then activate:
-```powershell
+``
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\.venv\Scripts\Activate.ps1
 python web_app.py
-```
+``
 Exit the venv with:
-```powershell
+``
 deactivate
-```
+``
 
 ### 4 Troubleshooting
 - "No module named 'flask'": you are not using the venv. Run with:
-```powershell
+``
 .\.venv\Scripts\python.exe web_app.py
-```
+``
 - "py" not found: use "python" instead of "py" in commands
 - Update packages later:
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+``
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+``
 - Verify Flask version (optional):
-```powershell
+``
 .\.venv\Scripts\python.exe -c "import flask; print(flask.__version__)"
-```
+``
 - Template note: Filenames and placeholder names must match what the code expects; visual changes are fine.

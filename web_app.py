@@ -188,7 +188,7 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
             # ignore stray files
             pass
 
-    # Also copy the AM Tracker workbook that lives in the Docs folder (sibling of CMD)
+    # Also copy the AM Tracker workbook(s) that live in the Docs folder (sibling of CMD)
     # Determine the Docs directory by taking the first segment of cmd_rel (e.g., 'docs')
     try:
         docs_segment = Path(cmd_rel).parts[0]
@@ -197,28 +197,28 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
     orig_docs = orig_job / docs_segment
     tmp_docs = tmp_job / docs_segment
     try:
-        # Skip copying if an AM Tracker already exists anywhere in the temp job root
-        existing = False
-        for p in tmp_job.rglob("*.xlsx"):
-            if "am tracker" in p.name.lower():
-                existing = True
-                break
-        if not existing:
-            for p in tmp_job.rglob("*.xlsm"):
-                if "am tracker" in p.name.lower():
-                    existing = True
-                    break
-
-        if not existing and orig_docs.is_dir():
-            # Collect candidates from Docs and choose the newest one
-            candidates = [
-                f for f in orig_docs.iterdir()
-                if f.is_file() and f.suffix.lower() in (".xlsx", ".xlsm") and "am tracker" in f.name.lower()
-            ]
-            if candidates:
-                best = max(candidates, key=lambda x: x.stat().st_mtime)
-                tmp_docs.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(best, tmp_docs / best.name)
+        if orig_docs.is_dir():
+            tmp_docs.mkdir(parents=True, exist_ok=True)
+            # Copy all AM Tracker files from Docs, but skip Office lock/temp files starting with '~'
+            for f in orig_docs.iterdir():
+                name_low = f.name.lower()
+                if not f.is_file():
+                    continue
+                if f.suffix.lower() not in (".xlsx", ".xlsm"):
+                    continue
+                if "am tracker" not in name_low:
+                    continue
+                if f.name.startswith("~"):
+                    # Skip temp/lock files like '~$...'
+                    continue
+                shutil.copy2(f, tmp_docs / f.name)
+            # Cleanup just in case: remove any '~' prefixed AM Tracker that slipped in anywhere in temp
+            for p in tmp_job.rglob("*.xls*"):
+                if p.name.startswith("~") and "am tracker" in p.name.lower():
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
     except Exception:
         # Non-fatal: if we can't find/copy, continue building
         pass

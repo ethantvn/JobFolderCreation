@@ -1124,7 +1124,7 @@ def process_po_source(
             logger.warning(f"Failed to remove source folder {source_dir}: {e}")
 
 
-def run_builder(cfg: Config, verbose: bool, dry_run: bool) -> None:
+def run_builder(cfg: Config, verbose: bool, dry_run: bool, progress_callback: Optional[callable] = None) -> None:
     logger = setup_logger(verbose)
     job_dir = cfg.run_data_root / cfg.job_folder_name
     if not job_dir.exists() or not job_dir.is_dir():
@@ -1162,6 +1162,15 @@ def run_builder(cfg: Config, verbose: bool, dry_run: bool) -> None:
         raise SystemExit(f"No source PO folders discovered under {cmd_dir}")
     logger.info(f"Discovered {len(sources)} source PO folder(s)")
 
+    # Initialize progress if provided
+    steps_total = len(sources) + 2  # process each PO + validate + zip
+    steps_done = 0
+    if progress_callback:
+        try:
+            progress_callback(int(steps_done / steps_total * 100))
+        except Exception:
+            pass
+
     # Templates map
     templates_cfg = parse_templates_map(cfg.templates_map_path, logger)
     validate_templates_exist(templates_cfg, cfg.fake_825_root)
@@ -1176,6 +1185,13 @@ def run_builder(cfg: Config, verbose: bool, dry_run: bool) -> None:
         except SystemExit as e:
             any_errors.append(f"{src.name}: {e}")
             run_report_lines.append(f"ERR: {src.name}: {e}")
+        finally:
+            steps_done += 1
+            if progress_callback:
+                try:
+                    progress_callback(min(99, int(steps_done / steps_total * 100)))
+                except Exception:
+                    pass
 
     # Optionally emit run report, then delete after successful build
     report_path: Optional[Path] = None
@@ -1204,6 +1220,13 @@ def run_builder(cfg: Config, verbose: bool, dry_run: bool) -> None:
                 raise SystemExit(f"Failed to move ZIP to output_root: {e}")
         else:
             zip_job_folder(job_dir, logger)
+
+        # Progress complete
+        if progress_callback:
+            try:
+                progress_callback(100)
+            except Exception:
+                pass
 
         # Cleanup the run report after successful packaging
         try:

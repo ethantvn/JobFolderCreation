@@ -18,49 +18,129 @@ app = Flask(__name__)
 
 TEMPLATE = """
 <!doctype html>
-<html lang="en">
+<html lang=\"en\">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>CMD Job Builder</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 720px; margin: 32px auto; }
-    label { display:block; margin-top: 12px; font-weight: 600; }
-    input[type=text] { width: 100%; padding: 8px; }
-    .row { margin-top: 8px; }
-    .btn { margin-top: 16px; padding: 10px 16px; background: #0b5; color: #fff; border: none; cursor: pointer; }
-    .btn:disabled { background: #999; cursor: not-allowed; }
-    .note { color: #444; font-size: 0.95em; margin-top: 8px; }
-    .error { color: #b00; }
+    :root {
+      /* Light theme */
+      --bg: #f5f7fb;        /* page background */
+      --panel: #ffffff;     /* card top */
+      --panel2: #f9fbff;    /* card bottom */
+      --text: #0c1220;      /* primary text */
+      --muted: #5a637a;     /* labels/help text */
+      --brand: #3b82f6;     /* primary accent */
+      --brand2: #2563eb;    /* gradient start */
+      --ok: #16a34a;        /* progress fill */
+      --shadow: 0 10px 28px rgba(20,31,56,.12);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial; color: var(--text);
+      background: linear-gradient(180deg, #eef2f9 0%, var(--bg) 100%);
+      padding: 28px; }
+    .shell { width: 100%; max-width: 900px; }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .brand { font-weight: 800; letter-spacing: .3px; font-size: 20px; color: var(--brand2); }
+    .card { background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
+      border: 1px solid #e3e8f3; border-radius: 14px; box-shadow: var(--shadow); padding: 22px; }
+    .grid { display: grid; grid-template-columns: 1fr 160px; gap: 14px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    input[type=text]{ width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #d6dce8;
+      background: #ffffff; color: var(--text); }
+    .toggle { display: inline-flex; align-items: center; gap: 10px; user-select: none; }
+    .btn { padding: 12px 16px; border-radius: 10px; border: 1px solid #cfe0ff; cursor: pointer; color: #fff;
+      background: linear-gradient(90deg, var(--brand2), var(--brand)); font-weight: 700; box-shadow: 0 6px 14px rgba(37,99,235,.18); }
+    .btn:disabled { opacity: .6; cursor: not-allowed; }
+    .sub { margin-top: 12px; color: var(--muted); font-size: 13px; }
+    .error { margin-top: 12px; color: #8b0000; background: #ffecec; border: 1px solid #ffbcbc; padding: 10px 12px; border-radius: 10px; }
+    #bar { height: 14px; background: #e9eef8; margin-top: 16px; border-radius: 999px; overflow: hidden;
+      border: 1px solid #d6dce8; display: none; }
+    #fill { height: 100%; width: 0; background: linear-gradient(90deg, #22c55e, var(--ok)); transition: width .25s ease; }
   </style>
   <script>
-    function onSubmitForm(e){
+    async function onSubmitForm(e){
+      e.preventDefault();
       const btn = document.getElementById('runBtn');
-      btn.disabled = true; btn.innerText = 'Building…';
-      return true;
+      const jf = document.getElementById('job_name');
+      const sterile = document.getElementById('sterile').checked;
+      const errBox = document.getElementById('err');
+      errBox.textContent = '';
+      errBox.style.display = 'none';
+      btn.disabled = true; btn.innerText = 'Starting…';
+      document.getElementById('bar').style.display = 'block';
+
+      const res = await fetch('/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_folder_name: jf.value, sterile: sterile })
+      });
+      if (!res.ok) { btn.disabled = false; btn.innerText = 'Build and Download ZIP'; return; }
+      const { job_id } = await res.json();
+      btn.innerText = 'Building… 0%';
+      await pollProgress(job_id, jf.value, btn);
+    }
+
+    async function pollProgress(jobId, jobName, btn){
+      try {
+        const r = await fetch('/progress?job_id=' + encodeURIComponent(jobId));
+        const j = await r.json();
+        if (j.error) {
+          const errBox = document.getElementById('err');
+          errBox.textContent = j.error;
+          errBox.style.display = 'block';
+          document.getElementById('bar').style.display = 'none';
+          btn.disabled = false; btn.innerText = 'Build and Download ZIP';
+          return;
+        }
+        const pct = Math.max(0, Math.min(100, j.percent|0));
+        document.getElementById('fill').style.width = pct + '%';
+        btn.innerText = 'Building… ' + pct + '%';
+        if (pct < 100) setTimeout(()=>pollProgress(jobId, jobName, btn), 500);
+        else {
+          btn.innerText = 'Downloading…';
+          window.location = '/download?job_id=' + encodeURIComponent(jobId) + '&name=' + encodeURIComponent(jobName);
+          setTimeout(()=>{ btn.disabled = false; btn.innerText = 'Build and Download ZIP'; }, 1500);
+        }
+      } catch(e){ setTimeout(()=>pollProgress(jobId, jobName, btn), 800); }
     }
   </script>
   </head>
   <body>
-    <h1>CMD Job Builder</h1>
-    <form method="POST" onsubmit="return onSubmitForm(event)">
-      <label>Job Folder Name</label>
-      <input type="text" name="job_folder_name" placeholder="J-25-B124 (VSR)" required />
-      <div class="row">
-        <label><input type="checkbox" name="sterile" checked /> Sterile</label>
+    <div class=\"shell\">
+      <div class=\"header\"><div class=\"brand\">CMD Job Builder</div></div>
+      <div class=\"card\">
+        <form method=\"POST\" onsubmit=\"return onSubmitForm(event)\">
+          <div class=\"grid\">
+            <div>
+              <label>Job Folder Name</label>
+              <input id=\"job_name\" type=\"text\" name=\"job_folder_name\" placeholder=\"J-25-B124 (VSR)\" required />
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <label class=\"toggle\"><input id=\"sterile\" type=\"checkbox\" name=\"sterile\" checked /> Sterile</label>
+            </div>
+          </div>
+          <div style=\"display:flex; gap:12px; align-items:center; margin-top:14px;\">
+            <button id=\"runBtn\" class=\"btn\">Build and Download ZIP</button>
+          </div>
+          <div class=\"sub\">Uses config.yaml for paths; overrides job folder name and sterile.</div>
+          <div id="err" class="error" style="display:none"></div>
+          {% if error %}<div class=\"error\">{{ error }}</div>{% endif %}
+          <div id=\"bar\"><div id=\"fill\"></div></div>
+        </form>
       </div>
-      <div class="row">
-        <button id="runBtn" class="btn">Build and Download ZIP</button>
-      </div>
-      <div class="note">Uses config.yaml in this directory for paths; only overrides job_folder_name and sterile.</div>
-      {% if error %}<div class="error">{{ error }}</div>{% endif %}
-    </form>
+    </div>
   </body>
-</html>
+ </html>
 """
 
 
-def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: bool) -> Path:
+progress_store = {}
+
+
+def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: bool, job_id: Optional[str] = None) -> Path:
     """Run the builder in a temporary workspace so nothing is written to the real job.
 
     Steps:
@@ -154,7 +234,12 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
 
     # Run the builder (not dry-run) inside temp
     cfg = load_config(merged_path)
-    run_builder(cfg, verbose=True, dry_run=False)
+    # Progress reporting
+    jid = job_id or f"job_{os.getpid()}_{threading.get_ident()}"
+    def cb(pct: int):
+        progress_store[jid] = max(0, min(100, int(pct)))
+
+    run_builder(cfg, verbose=True, dry_run=False, progress_callback=cb)
 
     # Locate the zip in temp
     zip_path = tmp_parent / f"{tmp_job.name}.zip"
@@ -169,36 +254,71 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
     return zip_path
 
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/", methods=["GET"])
 def index():
-    if request.method == "GET":
-        return render_template_string(TEMPLATE)
+    return render_template_string(TEMPLATE)
 
-    job_folder_name = request.form.get("job_folder_name", "").strip()
-    sterile_flag = request.form.get("sterile") == "on"
 
+@app.route("/start", methods=["POST"])
+def start():
+    body = request.get_json(force=True, silent=True) or {}
+    job_folder_name = str(body.get("job_folder_name", "")).strip()
+    sterile_flag = bool(body.get("sterile", False))
     if not job_folder_name:
-        return render_template_string(TEMPLATE, error="Job folder name is required")
+        return {"error": "Job folder name is required"}, 400
 
     config_path = Path("config.yaml")
     if not config_path.exists():
-        return render_template_string(TEMPLATE, error="config.yaml not found next to web_app.py")
+        return {"error": "config.yaml not found"}, 400
 
-    try:
-        zip_path = _run_builder_capture_zip(config_path, job_folder_name, sterile_flag)
-        data = zip_path.read_bytes()
-        # Attempt to cleanup the entire temp directory that contains the zip
+    job_id = f"job_{os.getpid()}_{threading.get_ident()}"
+    progress_store[job_id] = 0
+
+    def runner():
         try:
-            shutil.rmtree(zip_path.parent)
-        except Exception:
-            pass
-    except SystemExit as e:
-        return render_template_string(TEMPLATE, error=f"Build failed: {e}")
-    except Exception as e:
-        return render_template_string(TEMPLATE, error=f"Unexpected error: {e}")
+            zip_path = _run_builder_capture_zip(config_path, job_folder_name, sterile_flag, job_id)
+            progress_store[job_id] = 100
+            progress_store[job_id + ":zip"] = str(zip_path)
+        except BaseException as e:
+            progress_store[job_id] = -1
+            progress_store[job_id + ":err"] = str(e)
 
-    # Stream zip bytes directly (no persistent file) – name it the job folder
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    return {"job_id": job_id}
+
+
+@app.route("/download", methods=["GET"])
+def download():
+    job_id = request.args.get("job_id", "")
+    job_folder_name = request.args.get("name", "job_build").strip() or "job_build"
+    err = progress_store.get(job_id + ":err")
+    if err:
+        return render_template_string(TEMPLATE, error=f"Build failed: {err}")
+    zip_path_str = progress_store.get(job_id + ":zip")
+    if not zip_path_str:
+        return render_template_string(TEMPLATE, error="ZIP not ready yet")
+    zip_path = Path(zip_path_str)
+    if not zip_path.exists():
+        return render_template_string(TEMPLATE, error="ZIP not found on disk")
+    data = zip_path.read_bytes()
+    try:
+        shutil.rmtree(zip_path.parent)
+    except Exception:
+        pass
     return send_file(io.BytesIO(data), as_attachment=True, download_name=f"{job_folder_name}.zip")
+
+
+@app.route("/progress", methods=["GET"])
+def progress():
+    jid = request.args.get("job_id", "")
+    if not jid or jid not in progress_store:
+        return {"error": "Job not found. Check job name and spacing."}
+    err = progress_store.get(jid + ":err")
+    if err:
+        return {"error": "Job not found. Check job name and spacing."}
+    pct = int(progress_store.get(jid, 0))
+    return {"percent": pct}
 
 
 if __name__ == "__main__":

@@ -197,12 +197,28 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
     orig_docs = orig_job / docs_segment
     tmp_docs = tmp_job / docs_segment
     try:
-        if orig_docs.is_dir():
-            tmp_docs.mkdir(parents=True, exist_ok=True)
-            for f in orig_docs.iterdir():
-                name_low = f.name.lower()
-                if f.is_file() and name_low.endswith((".xlsx", ".xlsm")) and "am tracker" in name_low:
-                    shutil.copy2(f, tmp_docs / f.name)
+        # Skip copying if an AM Tracker already exists anywhere in the temp job root
+        existing = False
+        for p in tmp_job.rglob("*.xlsx"):
+            if "am tracker" in p.name.lower():
+                existing = True
+                break
+        if not existing:
+            for p in tmp_job.rglob("*.xlsm"):
+                if "am tracker" in p.name.lower():
+                    existing = True
+                    break
+
+        if not existing and orig_docs.is_dir():
+            # Collect candidates from Docs and choose the newest one
+            candidates = [
+                f for f in orig_docs.iterdir()
+                if f.is_file() and f.suffix.lower() in (".xlsx", ".xlsm") and "am tracker" in f.name.lower()
+            ]
+            if candidates:
+                best = max(candidates, key=lambda x: x.stat().st_mtime)
+                tmp_docs.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(best, tmp_docs / best.name)
     except Exception:
         # Non-fatal: if we can't find/copy, continue building
         pass

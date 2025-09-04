@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-CMD Job Folder Builder CLI
-
-Implements WI Execution Steps 5.0–5.11 for PO Processing, Folder Creation,
-and Form Pre-population.
-
-Requirements:
-- Python 3.9+
-- PyMuPDF (fitz) for PDF text
-- openpyxl for Excel
-- PyYAML for configuration
-- stdlib: zipfile, shutil, re, csv, pathlib, argparse, logging, sys, io, tempfile, json
-
-Usage:
-  python cmd_job_builder.py --config config.yaml [--verbose] [--dry-run]
-
-This tool performs NO network calls and NO AI usage. Deterministic only.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -1128,6 +1109,11 @@ def process_po_source(
             raise SystemExit(f"Audit CSV not generated: {audit_csv}")
         # No placeholders left
         verify_no_placeholders_in_dir(po_folders.mbr_dir)
+        # Remove item audit after successful verification
+        try:
+            audit_csv.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     # Remove the original source folder so only _VSR siblings remain
     if not dry_run:
@@ -1191,7 +1177,8 @@ def run_builder(cfg: Config, verbose: bool, dry_run: bool) -> None:
             any_errors.append(f"{src.name}: {e}")
             run_report_lines.append(f"ERR: {src.name}: {e}")
 
-    # Optionally emit run report
+    # Optionally emit run report, then delete after successful build
+    report_path: Optional[Path] = None
     if not dry_run:
         report_path = job_dir / "run_report.txt"
         with open(report_path, "w", encoding="utf-8") as f:
@@ -1217,6 +1204,13 @@ def run_builder(cfg: Config, verbose: bool, dry_run: bool) -> None:
                 raise SystemExit(f"Failed to move ZIP to output_root: {e}")
         else:
             zip_job_folder(job_dir, logger)
+
+        # Cleanup the run report after successful packaging
+        try:
+            if report_path is not None:
+                report_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:

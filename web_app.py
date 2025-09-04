@@ -108,6 +108,25 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
             # ignore stray files
             pass
 
+    # Also copy the AM Tracker workbook that lives in the Docs folder (sibling of CMD)
+    # Determine the Docs directory by taking the first segment of cmd_rel (e.g., 'docs')
+    try:
+        docs_segment = Path(cmd_rel).parts[0]
+    except Exception:
+        docs_segment = "docs"
+    orig_docs = orig_job / docs_segment
+    tmp_docs = tmp_job / docs_segment
+    try:
+        if orig_docs.is_dir():
+            tmp_docs.mkdir(parents=True, exist_ok=True)
+            for f in orig_docs.iterdir():
+                name_low = f.name.lower()
+                if f.is_file() and name_low.endswith((".xlsx", ".xlsm")) and "am tracker" in name_low:
+                    shutil.copy2(f, tmp_docs / f.name)
+    except Exception:
+        # Non-fatal: if we can't find/copy, continue building
+        pass
+
     # Create empty placeholder folders in temp for any non-CMD dirs under Docs in the original job
     # We only mirror top-level names under Docs (e.g., Xenix), not their contents
     docs_dir = None

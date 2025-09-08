@@ -241,6 +241,16 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
     cfg_data["run_data_root"] = str(tmp_parent)
     cfg_data["job_folder_name"] = job_folder_name
     cfg_data["sterile"] = bool(sterile)
+    # Derive job_number from the provided job_folder_name. Example:
+    # "J-25-B134 (VSR)" -> "J-25-B134".
+    try:
+        base_name = job_folder_name.split("(")[0].strip()
+        derived_job_number = (base_name.split()[0] if base_name else "").strip()
+        if derived_job_number:
+            cfg_data["job_number"] = derived_job_number
+    except Exception:
+        # If parsing fails for any reason, fall back to the value from base config
+        pass
     # Ensure we do not set output_root (keep in temp)
     cfg_data.pop("output_root", None)
 

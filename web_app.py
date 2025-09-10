@@ -342,7 +342,8 @@ def progress():
         return {"error": "Job not found. Check job name and spacing."}
     err = progress_store.get(jid + ":err")
     if err:
-        return {"error": "Job not found. Check job name and spacing."}
+        # Surface the underlying error so users can diagnose issues
+        return {"error": str(err)}
     pct = int(progress_store.get(jid, 0))
     return {"percent": pct}
 

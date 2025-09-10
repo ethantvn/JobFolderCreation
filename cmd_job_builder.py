@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import csv
 import io
 import json
@@ -605,27 +606,89 @@ def parse_templates_map(xlsx_path: Path, logger: logging.Logger) -> TemplatesCon
         wb.close()
 
 
+def _normalize_filename(name: str) -> str:
+    s = str(name)
+    # Replace NBSP with space and collapse multiple spaces
+    s = s.replace("\xa0", " ")
+    # Normalize common dash variants to ASCII hyphen
+    s = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2212]", "-", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip().lower()
+
+
+def resolve_template_path(root: Path, filename: Optional[str]) -> Optional[Path]:
+    """Resolve a template path under root, handling NBSPs and dash variants.
+
+    Returns an existing Path if a best-effort match is found; otherwise returns
+    the direct joined path which likely does not exist so caller can error.
+    """
+    if not filename:
+        return None
+    direct = root / filename
+    if direct.exists():
+        return direct
+    target_norm = _normalize_filename(filename)
+    target_stem_norm = _normalize_filename(Path(filename).stem)
+    target_ext = Path(filename).suffix.lower()
+    # Allow xlsx/xlsm to swap; keep docx strict
+    if target_ext in {".xlsx", ".xlsm"}:
+        allowed_exts = {".xlsx", ".xlsm"}
+    elif target_ext:
+        allowed_exts = {target_ext}
+    else:
+        allowed_exts = None
+    # Try extension swap direct path
+    if target_ext in {".xlsx", ".xlsm"}:
+        alt = direct.with_suffix(".xlsm" if target_ext == ".xlsx" else ".xlsx")
+        if alt.exists():
+            return alt
+    # Search recursively for normalized name match using a resilient walker
+    def _on_walk_error(err: BaseException) -> None:
+        # Ignore traversal errors (permissions, transient network issues)
+        return None
+
+    try:
+        for dirpath, _dirnames, filenames in os.walk(root, topdown=True, onerror=_on_walk_error):
+            dir_path = Path(dirpath)
+            for fname in filenames:
+                f = dir_path / fname
+                if allowed_exts and f.suffix.lower() not in allowed_exts:
+                    continue
+                name_norm = _normalize_filename(f.name)
+                if name_norm == target_norm or _normalize_filename(f.stem) == target_stem_norm:
+                    return f
+                # Fallback: compare alphanumeric-only keys of stems to tolerate dots/underscores/dashes
+                target_key = re.sub(r"[^a-z0-9]", "", target_stem_norm)
+                cand_key = re.sub(r"[^a-z0-9]", "", _normalize_filename(f.stem))
+                if target_key and cand_key and cand_key == target_key:
+                    return f
+    except Exception:
+        # If traversal still fails, fall back to direct path
+        pass
+    return direct
+
+
 def validate_templates_exist(templates: TemplatesConfig, fake_825_root: Path) -> None:
     # Validate CoC
     if templates.coc_sterile:
-        path = fake_825_root / templates.coc_sterile
+        path = resolve_template_path(fake_825_root, templates.coc_sterile)
         if not path.exists():
             raise SystemExit(f"Missing CoC (Sterile) template: {path}")
     if templates.coc_nonsterile:
-        path = fake_825_root / templates.coc_nonsterile
+        path = resolve_template_path(fake_825_root, templates.coc_nonsterile)
         if not path.exists():
             raise SystemExit(f"Missing CoC (Non-Sterile) template: {path}")
 
     # Validate prefix templates
     for prefix, mapping in templates.per_prefix.items():
         if mapping.final_qc:
-            p = fake_825_root / mapping.final_qc
+            p = resolve_template_path(fake_825_root, mapping.final_qc)
             if not p.exists():
                 raise SystemExit(f"Missing Final QC template for {prefix}: {p}")
             if not p.suffix.lower() in (".xlsx", ".xlsm"):
                 raise SystemExit(f"Final QC template must be .xlsx/.xlsm: {p}")
         if mapping.dim:
-            p = fake_825_root / mapping.dim
+            p = resolve_template_path(fake_825_root, mapping.dim)
             if not p.exists():
                 raise SystemExit(f"Missing Dimension template for {prefix}: {p}")
             if not p.suffix.lower() in (".xlsx", ".xlsm"):
@@ -1064,7 +1127,7 @@ def process_po_source(
     coc_filename = templates.coc_sterile if cfg.sterile else templates.coc_nonsterile
     if not coc_filename:
         raise SystemExit("CoC template filename not present in template map")
-    coc_template_path = cfg.fake_825_root / coc_filename
+    coc_template_path = resolve_template_path(cfg.fake_825_root, coc_filename)
     if not coc_template_path.exists():
         raise SystemExit(f"CoC template missing: {coc_template_path}")
 
@@ -1080,8 +1143,8 @@ def process_po_source(
             # No mapping for this prefix; allowed, just skip
             logger.warning(f"No template mapping for prefix {prefix}; skipping QC/Dim")
             continue
-        final_qc_tmpl = cfg.fake_825_root / mapping.final_qc if mapping.final_qc else None
-        dim_tmpl = cfg.fake_825_root / mapping.dim if mapping.dim else None
+        final_qc_tmpl = resolve_template_path(cfg.fake_825_root, mapping.final_qc) if mapping.final_qc else None
+        dim_tmpl = resolve_template_path(cfg.fake_825_root, mapping.dim) if mapping.dim else None
         generated = generate_excel_for_prefix(
             po_folders,
             prefix,

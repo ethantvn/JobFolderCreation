@@ -1,0 +1,9 @@
+cmd_rel_path: docs\CMD
+dropbox_root: ''
+fake_825_root: Q:\825 - Monitoring & Measurement
+job_folder_name: J-25-C091 (VSR)
+job_number: J-25-C091
+reset_sc_on_rerun: true
+run_data_root: C:\Users\ETHANN~1\AppData\Local\Temp\cmd_web_dwq2t0wo
+sterile: true
+templates_map_path: ./maps/MBR Template Map.xlsx

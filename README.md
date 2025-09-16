@@ -1,22 +1,17 @@
 ## CMD Job Folder Builder
 
-Deterministic Python CLI that reproduces the “perfect job folder” workflow for CMD jobs per WI steps 5.0–5.11.
+Build consistent, validated job folders for CMD work. Point the tool at your run data and it will:
+- Find each PO folder
+- Create `_VSR MBR` and `_VSR S&C` siblings
+- Copy source files into S&C and verify counts
+- Select templates from `MBR Template Map.xlsx`
+- Generate CoC, Final QC, and Dimension files
+- Write `item_audit.csv`
+- Check for placeholders and zip the job folder
 
-### Features
-- Validates CMD job folder structure and discovers source PO folders
-- Extracts PO number, lot number, and parses item tables from PDFs
-- Resolves versions from Primary/Derived Part Versions sections (fallback to table)
-- Creates flat sibling `_VSR MBR` and `_VSR S&C` directories for each PO
-- Recursively copies source into `_VSR S&C` and verifies file/dir counts
-- Selects templates from `MBR Template Map.xlsx`
-- Generates CoC `.docx` and per-prefix Final QC/Dimension `.xlsx/.xlsm`
-- Writes `item_audit.csv` per PO
-- Validates there are no leftover placeholders and final zips the job folder
-- Optional `--dry-run` + `run_report.txt`
-
-### Requirements
+### Prerequisites
 - Python 3.9+
-- See `requirements.txt`
+- `pip` available (see `requirements.txt`)
 
 ### Install
 ```bash
@@ -24,63 +19,67 @@ pip install -r requirements.txt
 ```
 
 ### Configure
-Copy `config.example.yaml` to `config.yaml` and edit paths and flags.
+Edit `config.yaml` (if you don’t have one, copy `config.example.yaml` to `config.yaml` and adjust).
 
+Key settings:
+- `run_data_root`: Parent folder that contains your job folder
+- `job_folder_name`: The job folder name (the ZIP will use this)
+- `cmd_rel_path`: Where the CMD source PO folders live inside the job folder
+- `templates_map_path` and `fake_825_root`: Where templates are found
+- `sterile`: Chooses the correct CoC template
+
+Example:
 ```yaml
 job_number: "J-25-XXXX"
 job_folder_name: "J-25-XXXX (VSR)"
 sterile: true
-run_data_root: "C:/.../S3D MFG PREP/2025 Run Data"
-templates_map_path: "C:/.../MBR Template Map.xlsx"
-fake_825_root: "C:/.../Empty Templates/Fake 825"
-dropbox_root: ""
-cmd_rel_path: "CMD"
+run_data_root: 'P:\\2025 Run Data'
+templates_map_path: './maps/MBR Template Map.xlsx'
+fake_825_root: 'Q:\\825 - Monitoring & Measurement'
+dropbox_root: ''
+cmd_rel_path: 'docs\\CMD'
 reset_sc_on_rerun: true
 ```
 
-### Run
+### Prepare your source folders
+Inside `<run_data_root>/<job_folder_name>/<cmd_rel_path>/`, include only source PO folders (directory names containing `PO####`). Do not include generic `MBR` or `S&C` folders there.
+
+### Run (CLI)
 ```bash
 python cmd_job_builder.py --config config.yaml --verbose
-# or dry-run
+# Dry run (no writes):
 python cmd_job_builder.py --config config.yaml --verbose --dry-run
 ```
 
-### Web UI (optional)
-Run a simple local website to enter `job_folder_name` and download the ZIP.
-
+### Optional: Web UI
+Run a small local site to enter `job_folder_name` and download the ZIP.
 ```bash
 pip install -r requirements.txt
 python web_app.py
-# open http://localhost:5000
+# then open http://localhost:5000
 ```
 
+### What you’ll get
+For each source PO directory under `<cmd_rel_path>` the tool creates, side-by-side:
+- `PO####_<Lot>_VSR MBR`
+- `PO####_<Lot>_VSR S&C`
 
-### Expected CMD structure
-`<run_data_root>/<job_folder_name>/CMD/` must contain only source PO folders (any dir whose name contains `PO####`). Generic `CMD/MBR` or `CMD/S&C` folders are forbidden.
+MBR outputs include:
+- `PO####_<Lot>_CoC.docx`
+- `PO####_<Lot>_<Prefix>_Final_QC.xlsx` (if mapping exists)
+- `PO####_<Lot>_<Prefix>_Dimension.xlsx` (if mapping exists)
+- `item_audit.csv`
 
-### Output
-For each source PO directory:
-- Creates sibling pair under `CMD/`:
-  - `PO####_<Lot>_VSR MBR`
-  - `PO####_<Lot>_VSR S&C`
-- MBR outputs:
-  - `PO####_<Lot>_CoC.docx`
-  - `PO####_<Lot>_<Prefix>_Final_QC.xlsx` (if mapping exists)
-  - `PO####_<Lot>_<Prefix>_Dimension.xlsx` (if mapping exists)
-  - `item_audit.csv`
+Finally, it zips the job folder as `<job_folder_name>.zip` in the parent of the job folder.
 
-Finally, zips the job folder into `<job_folder_name>.zip` in the parent directory.
-
-### Template Map
-The workbook should contain rows like:
-- `Item starts with C use:` … with column B = Final QC template, column C = Dim template
-- `CofC for Sterile` and `CofC for Non-Sterile` rows mapping to `.docx`
+### Template Map expectations
+Your workbook should include rows like:
+- “Item starts with C use:” with column B = Final QC template and column C = Dimension template
+- “CofC for Sterile” and “CofC for Non-Sterile” rows mapping to `.docx`
 
 All referenced templates must exist under `fake_825_root`.
 
 ### Notes
-- PDF parsing uses text extraction (no layout), tolerant regexes
+- PDF parsing uses text extraction (no layout) with tolerant regexes
 - Excludes item codes matching `^aprevo\d+$`
 - Numeric-starting items are included in CoC, excluded from QC/Dim
-
-

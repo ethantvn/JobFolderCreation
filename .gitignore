@@ -11,6 +11,8 @@ build/
 # Temporary files
 .web_tmp_*.yaml
 *.tmp
+~$*.xlsx
+~$*.xls
 
 # IDE
 .vscode/

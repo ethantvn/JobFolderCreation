@@ -798,8 +798,8 @@ def parse_templates_map(xlsx_path: Path, logger: logging.Logger) -> TemplatesCon
                     continue
                 low = first.lower()
                 if low.startswith("item starts with"):
-                    # Example: "Item starts with C use:"
-                    m = re.search(r"item starts with\s*([A-Za-z])", low)
+                    # Example: "Item starts with C use:" or "Item starts with AMP use:"
+                    m = re.search(r"item starts with\s*([A-Za-z]+)", low)
                     if not m:
                         continue
                     prefix = m.group(1).upper()
@@ -1171,8 +1171,11 @@ def build_datasets(items: List[ItemRow]) -> Tuple[List[ItemRow], Dict[str, List[
     per_prefix: Dict[str, List[ItemRow]] = defaultdict(list)
     numeric_items: List[ItemRow] = []
     for it in items:
-        if re.match(r"^[A-Za-z]\.", it.item_code):
-            prefix = it.item_code[0].upper()
+        # Match items starting with letter(s) followed by dot (e.g., "A.123" or "AMP.123")
+        # Extract all letters before the dot as the prefix
+        letter_dot_match = re.match(r"^([A-Za-z]+)\.", it.item_code)
+        if letter_dot_match:
+            prefix = letter_dot_match.group(1).upper()
             per_prefix[prefix].append(it)
         elif re.match(r"^\d", it.item_code):
             numeric_items.append(it)

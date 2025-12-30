@@ -19,7 +19,7 @@ pip install -r requirements.txt
 ```
 
 ### Configure
-Edit `config.yaml` (if you don’t have one, copy `config.example.yaml` to `config.yaml` and adjust).
+Edit `config.yaml` with your settings.
 
 Key settings:
 - `run_data_root`: Parent folder that contains your job folder

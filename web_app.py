@@ -209,25 +209,82 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
     with open(config_path, "r", encoding="utf-8") as f:
         base_cfg = yaml.safe_load(f) or {}
 
-    run_data_root = Path(base_cfg["run_data_root"]).expanduser()
+    # Extract job number from job_folder_name (e.g., "J-25-B124 (VSR)" -> "J-25-B124")
+    job_number = job_folder_name.split(" (")[0].strip()
+    
+    # Use auto-update logic to get correct run_data_root path
+    from cmd_job_builder import auto_update_config_paths
+    updated_cfg = auto_update_config_paths(dict(base_cfg), job_number)
+    
+    run_data_root_str = updated_cfg["run_data_root"]
+    
+    # Always try to convert UNC path to mapped drive letter
+    # Windows often maps UNC paths to drive letters (e.g., \\srv3d\company\Dropbox -> P:)
+    if run_data_root_str.startswith("\\\\"):
+        # Extract the path after the server/share part
+        # e.g., "\\srv3d\company\Dropbox\2025 Run Data\Ren B" -> "2025 Run Data\Ren B"
+        # UNC format: \\server\share\path...
+        path_parts = [p for p in run_data_root_str.split("\\") if p]  # Remove empty strings
+        # UNC format: \\server\domain\share\path...
+        # We need to skip: server, domain/workgroup, and share (first 3 parts)
+        if len(path_parts) >= 4:  # At least server, domain, share, and one folder
+            # Everything after server\domain\share
+            remaining_path = "\\".join(path_parts[3:])  # Skip server, domain, and share
+            # Try common drive letters that might map to this UNC
+            for drive in ["P", "J", "N", "Q"]:  # Common mapped drives
+                test_path = f"{drive}:\\{remaining_path}"
+                # Check if this path exists
+                try:
+                    if os.path.isdir(test_path):
+                        run_data_root_str = test_path
+                        break
+                    # Also check if the parent exists (in case "Ren B" doesn't exist yet)
+                    parent_path = os.path.dirname(test_path)
+                    if os.path.isdir(parent_path):
+                        # At least the parent exists, use this drive
+                        run_data_root_str = test_path
+                        break
+                except Exception:
+                    continue
+    
+    # Convert path to Path object
+    run_data_root = Path(run_data_root_str)
     cmd_rel = str(base_cfg.get("cmd_rel_path", "CMD"))
 
     # Find original job dir (direct or one-level under run_data_root)
-    orig_job = run_data_root / job_folder_name
-    if not orig_job.is_dir():
+    # Use os.path.exists for UNC paths as Path operations can be unreliable
+    orig_job_path = os.path.join(run_data_root_str, job_folder_name)
+    orig_job = Path(orig_job_path)
+    
+    if not os.path.isdir(orig_job_path):
+        # Try one level down (shouldn't be needed with new structure, but keep for compatibility)
         cand = None
-        if run_data_root.is_dir():
-            for child in run_data_root.iterdir():
-                if child.is_dir() and (child / job_folder_name).is_dir():
-                    cand = child / job_folder_name
-                    break
+        try:
+            if os.path.isdir(run_data_root_str):
+                for child_name in os.listdir(run_data_root_str):
+                    child_path = os.path.join(run_data_root_str, child_name)
+                    if os.path.isdir(child_path):
+                        candidate_job = os.path.join(child_path, job_folder_name)
+                        if os.path.isdir(candidate_job):
+                            cand = Path(candidate_job)
+                            break
+        except (OSError, PermissionError) as e:
+            # If we can't access the directory, provide a helpful error
+            raise SystemExit(f"Cannot access run_data_root: {run_data_root_str}. Error: {e}")
+        
         if not cand:
-            raise SystemExit(f"Job folder not found for web run: {orig_job} (also searched one level under {run_data_root})")
+            # Provide detailed error with both paths tried
+            raise SystemExit(
+                f"Job folder not found for web run: {orig_job_path}\n"
+                f"Searched in: {run_data_root_str}\n"
+                f"Also searched one level under: {run_data_root_str}"
+            )
         orig_job = cand
 
-    orig_cmd = orig_job / cmd_rel
-    if not orig_cmd.is_dir():
-        raise SystemExit(f"CMD directory not found in job: {orig_cmd}")
+    orig_cmd_path = os.path.join(str(orig_job), cmd_rel)
+    orig_cmd = Path(orig_cmd_path)
+    if not os.path.isdir(orig_cmd_path):
+        raise SystemExit(f"CMD directory not found in job: {orig_cmd_path}")
 
     # Build in a temp workspace
     tmp_dir = Path(tempfile.mkdtemp(prefix="cmd_web_"))
@@ -238,14 +295,16 @@ def _run_builder_capture_zip(config_path: Path, job_folder_name: str, sterile: b
 
     # Copy only the CMD source folders to temp (using fast hardlink copy)
     copy_start_time = time.time()
-    for child in orig_cmd.iterdir():
-        if child.is_dir():
-            # Use fast_copytree from cmd_job_builder for hardlink optimization
-            from cmd_job_builder import fast_copytree
-            fast_copytree(child, tmp_cmd / child.name)
-        else:
-            # ignore stray files
-            pass
+    try:
+        for child_name in os.listdir(str(orig_cmd)):
+            child_path = os.path.join(str(orig_cmd), child_name)
+            if os.path.isdir(child_path):
+                # Use fast_copytree from cmd_job_builder for hardlink optimization
+                from cmd_job_builder import fast_copytree
+                fast_copytree(Path(child_path), tmp_cmd / child_name)
+            # ignore files
+    except (OSError, PermissionError) as e:
+        raise SystemExit(f"Failed to list CMD directory {orig_cmd}: {e}")
     copy_duration = time.time() - copy_start_time
     import logging
     logging.getLogger("cmd_job_builder").debug(f"Temp CMD copy completed in {copy_duration:.2f}s")

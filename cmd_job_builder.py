@@ -77,9 +77,172 @@ def setup_logger(verbose: bool) -> logging.Logger:
     return logger
 
 
+def parse_job_number(job_number: str) -> Tuple[int, str]:
+    """Parse job number format J-XX-XXXX to extract year and letter.
+    
+    Returns:
+        Tuple of (year (as 2-digit), letter)
+    Example:
+        "J-25-B124" -> (25, "B")
+        "J-26-A001" -> (26, "A")
+    """
+    match = re.match(r"^J-(\d{2})-([A-Z])(\d+)$", job_number.strip().upper())
+    if not match:
+        raise SystemExit(f"Invalid job number format: {job_number}. Expected format: J-XX-XXXX (e.g., J-25-B124)")
+    year = int(match.group(1))
+    letter = match.group(2)
+    return year, letter
+
+
+def convert_unc_to_drive(unc_path: str) -> str:
+    """Convert UNC path to mapped drive letter if available.
+    
+    Returns the drive letter path if found, otherwise returns original UNC path.
+    """
+    if not unc_path.startswith("\\\\"):
+        return unc_path
+    
+    # Extract the path after the server/domain/share part
+    # e.g., "\\srv3d\company\Dropbox\Q825 - Monitoring & Measurement" 
+    # -> "Q825 - Monitoring & Measurement"
+    path_parts = [p for p in unc_path.split("\\") if p]  # Remove empty strings
+    # UNC format: \\server\domain\share\path...
+    # We need to skip: server, domain/workgroup, and share (first 3 parts)
+    if len(path_parts) >= 4:  # At least server, domain, share, and one folder
+        # Everything after server\domain\share
+        remaining_path = "\\".join(path_parts[3:])  # Skip server, domain, and share
+        # Try common drive letters that might map to this UNC
+        for drive in ["P", "J", "N", "Q"]:  # Common mapped drives
+            # Handle case where folder name starts with drive letter (e.g., "Q825" -> "825" when on Q: drive)
+            test_remaining = remaining_path
+            if remaining_path.startswith(f"{drive}") and len(remaining_path) > 1 and remaining_path[1].isdigit():
+                # Remove the drive letter prefix if it matches (e.g., "Q825" -> "825")
+                test_remaining = remaining_path[1:]
+            
+            test_path = f"{drive}:\\{test_remaining}"
+            # Check if this path exists
+            try:
+                if os.path.isdir(test_path) or os.path.exists(test_path):
+                    return test_path
+            except Exception:
+                # Also try with original remaining_path in case the prefix is needed
+                if test_remaining != remaining_path:
+                    test_path_orig = f"{drive}:\\{remaining_path}"
+                    try:
+                        if os.path.isdir(test_path_orig) or os.path.exists(test_path_orig):
+                            return test_path_orig
+                    except Exception:
+                        pass
+                continue
+    
+    # If no drive mapping found, return original UNC path
+    return unc_path
+
+
+def auto_update_config_paths(cfg: dict, job_number: str) -> dict:
+    """Auto-update run_data_root and job_folder_name based on job number.
+    
+    Parses job number (e.g., J-25-B124) to determine:
+    - Year: 25 -> "2025 Run Data"
+    - Letter: B -> "Ren B"
+    - Updates run_data_root to include year folder and Ren X subfolder
+    - Updates job_folder_name to "{job_number} (VSR)"
+    """
+    try:
+        year, letter = parse_job_number(job_number)
+        full_year = 2000 + year
+        
+        # Extract base path from existing run_data_root
+        # e.g., "\\srv3d\company\Dropbox\2025 Run Data" -> "\\srv3d\company\Dropbox"
+        # or "P:\2025 Run Data" -> "P:"
+        existing_root = str(cfg.get("run_data_root", ""))
+        if not existing_root:
+            # Default base path if not set
+            base_path = "P:\\"
+        else:
+            # Parse the path to extract base
+            path_obj = Path(existing_root)
+            parts = list(path_obj.parts)
+            
+            # Look for year folder pattern (e.g., "2025 Run Data") and remove it and everything after
+            base_parts = []
+            found_year_folder = False
+            for part in parts:
+                if re.match(r"^\d{4} Run Data$", part, re.IGNORECASE):
+                    found_year_folder = True
+                    break
+                base_parts.append(part)
+            
+            if found_year_folder and base_parts:
+                # Reconstruct base path
+                if len(base_parts) == 1 and base_parts[0].endswith(":"):
+                    # Drive letter like "P:"
+                    base_path = base_parts[0] + "\\"
+                elif base_parts[0].startswith("\\\\"):
+                    # UNC path like "\\srv3d\company\Dropbox"
+                    base_path = "\\".join(base_parts)
+                else:
+                    # Regular path
+                    base_path = str(Path(*base_parts))
+            else:
+                # No year folder found, use existing as base (might already be correct)
+                base_path = existing_root.rstrip("\\")
+        
+        # Build new run_data_root: base_path\YYYY Run Data\Ren X
+        ren_folder = f"Ren {letter}"
+        year_folder = f"{full_year} Run Data"
+        
+        # Use Path for proper path joining (handles both UNC and regular paths)
+        base_path_obj = Path(base_path)
+        new_run_data_root = str(base_path_obj / year_folder / ren_folder)
+        
+        # Update config
+        cfg["run_data_root"] = new_run_data_root
+        cfg["job_folder_name"] = f"{job_number} (VSR)"
+        
+    except SystemExit:
+        raise
+    except Exception as e:
+        raise SystemExit(f"Failed to auto-update config paths: {e}")
+    
+    return cfg
+
+
 def load_config(path: Path) -> Config:
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
+
+    # Check for job_number first
+    if "job_number" not in cfg:
+        raise SystemExit(f"Missing required config key: job_number")
+    
+    job_number = str(cfg["job_number"]).strip()
+    
+    # Auto-update paths based on job number, but skip if run_data_root is a temp directory
+    # (web app uses temp directories and sets run_data_root manually)
+    run_data_root_str = str(cfg.get("run_data_root", ""))
+    # Check if this is a temp directory (web app scenario)
+    is_temp_dir = (
+        "temp" in run_data_root_str.lower() or 
+        "tmp" in run_data_root_str.lower() or 
+        "appdata" in run_data_root_str.lower() or
+        "cmd_web_" in run_data_root_str  # Web app temp prefix
+    )
+    
+    if not is_temp_dir:
+        # Auto-update paths based on job number
+        cfg = auto_update_config_paths(cfg, job_number)
+        
+        # Write updated config back to file (only if not temp)
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    
+    # Always convert UNC paths to drive letters for both run_data_root and fake_825_root
+    # (works for both regular config and temp config)
+    if "run_data_root" in cfg:
+        cfg["run_data_root"] = convert_unc_to_drive(str(cfg["run_data_root"]))
+    if "fake_825_root" in cfg:
+        cfg["fake_825_root"] = convert_unc_to_drive(str(cfg["fake_825_root"]))
 
     required = [
         "job_number",
@@ -103,7 +266,7 @@ def load_config(path: Path) -> Config:
     if zip_compression not in ("stored", "deflated"):
         zip_compression = "deflated"
     return Config(
-        job_number=str(cfg["job_number"]).strip(),
+        job_number=job_number,
         job_folder_name=str(cfg["job_folder_name"]).strip(),
         sterile=bool(cfg["sterile"]),
         run_data_root=Path(cfg["run_data_root"]).expanduser(),
@@ -560,16 +723,28 @@ def copy_excel_template_and_fill(
     shutil.copy2(template_path, output_path)
     wb = openpyxl.load_workbook(output_path)
     try:
+        # Pre-compile regex for cleanup if needed
+        curly_re = re.compile(r"\{\{[^}]+\}\}") if cleanup_curly else None
+        
         for ws in wb.worksheets:
             for row in ws.iter_rows():
                 for cell in row:
-                    if isinstance(cell.value, str):
-                        text = cell.value
-                        for key, val in cell_replacements.items():
-                            if key in text:
-                                text = text.replace(key, val)
-                        if cleanup_curly and ("{{" in text or "}}" in text):
-                            text = re.sub(r"\{\{[^}]+\}\}", "", text)
+                    if not isinstance(cell.value, str):
+                        continue
+                    text = cell.value
+                    original_text = text
+                    
+                    # Apply all replacements
+                    for key, val in cell_replacements.items():
+                        if key in text:
+                            text = text.replace(key, val)
+                    
+                    # Always cleanup curly braces if enabled and present
+                    if cleanup_curly and curly_re and ("{{" in text or "}}" in text):
+                        text = curly_re.sub("", text)
+                    
+                    # Update cell if text changed
+                    if text != original_text:
                         cell.value = text
         wb.save(output_path)
     finally:
@@ -673,17 +848,31 @@ def _normalize_filename(name: str) -> str:
     return s.strip().lower()
 
 
-def resolve_template_path(root: Path, filename: Optional[str]) -> Optional[Path]:
+def resolve_template_path(root: Path, filename: Optional[str], cache: Optional[Dict[str, Path]] = None) -> Optional[Path]:
     """Resolve a template path under root, handling NBSPs and dash variants.
 
     Returns an existing Path if a best-effort match is found; otherwise returns
     the direct joined path which likely does not exist so caller can error.
+    
+    Args:
+        root: Root directory to search in
+        filename: Template filename to find
+        cache: Optional dict to cache resolved paths (key: filename, value: Path)
     """
     if not filename:
         return None
+    
+    # Check cache first
+    if cache is not None and filename in cache:
+        return cache[filename]
+    
     direct = root / filename
     if direct.exists():
-        return direct
+        result = direct
+        if cache is not None:
+            cache[filename] = result
+        return result
+    
     target_norm = _normalize_filename(filename)
     target_stem_norm = _normalize_filename(Path(filename).stem)
     target_ext = Path(filename).suffix.lower()
@@ -698,7 +887,10 @@ def resolve_template_path(root: Path, filename: Optional[str]) -> Optional[Path]
     if target_ext in {".xlsx", ".xlsm"}:
         alt = direct.with_suffix(".xlsm" if target_ext == ".xlsx" else ".xlsx")
         if alt.exists():
-            return alt
+            result = alt
+            if cache is not None:
+                cache[filename] = result
+            return result
     # Search recursively for normalized name match using a resilient walker
     def _on_walk_error(err: BaseException) -> None:
         # Ignore traversal errors (permissions, transient network issues)
@@ -713,43 +905,62 @@ def resolve_template_path(root: Path, filename: Optional[str]) -> Optional[Path]
                     continue
                 name_norm = _normalize_filename(f.name)
                 if name_norm == target_norm or _normalize_filename(f.stem) == target_stem_norm:
-                    return f
+                    result = f
+                    if cache is not None:
+                        cache[filename] = result
+                    return result
                 # Fallback: compare alphanumeric-only keys of stems to tolerate dots/underscores/dashes
                 target_key = re.sub(r"[^a-z0-9]", "", target_stem_norm)
                 cand_key = re.sub(r"[^a-z0-9]", "", _normalize_filename(f.stem))
                 if target_key and cand_key and cand_key == target_key:
-                    return f
+                    result = f
+                    if cache is not None:
+                        cache[filename] = result
+                    return result
     except Exception:
         # If traversal still fails, fall back to direct path
         pass
-    return direct
+    result = direct
+    if cache is not None:
+        cache[filename] = result
+    return result
 
 
-def validate_templates_exist(templates: TemplatesConfig, fake_825_root: Path) -> None:
+def validate_templates_exist(templates: TemplatesConfig, fake_825_root: Path, template_cache: Optional[Dict[str, Path]] = None) -> Dict[str, Path]:
+    """Validate templates exist and return a cache of resolved paths.
+    
+    Returns a dict mapping template filenames to their resolved Path objects.
+    This cache can be reused to avoid repeated directory walks.
+    """
+    if template_cache is None:
+        template_cache = {}
+    
     # Validate CoC
     if templates.coc_sterile:
-        path = resolve_template_path(fake_825_root, templates.coc_sterile)
+        path = resolve_template_path(fake_825_root, templates.coc_sterile, cache=template_cache)
         if not path.exists():
             raise SystemExit(f"Missing CoC (Sterile) template: {path}")
     if templates.coc_nonsterile:
-        path = resolve_template_path(fake_825_root, templates.coc_nonsterile)
+        path = resolve_template_path(fake_825_root, templates.coc_nonsterile, cache=template_cache)
         if not path.exists():
             raise SystemExit(f"Missing CoC (Non-Sterile) template: {path}")
 
     # Validate prefix templates
     for prefix, mapping in templates.per_prefix.items():
         if mapping.final_qc:
-            p = resolve_template_path(fake_825_root, mapping.final_qc)
+            p = resolve_template_path(fake_825_root, mapping.final_qc, cache=template_cache)
             if not p.exists():
                 raise SystemExit(f"Missing Final QC template for {prefix}: {p}")
             if not p.suffix.lower() in (".xlsx", ".xlsm"):
                 raise SystemExit(f"Final QC template must be .xlsx/.xlsm: {p}")
         if mapping.dim:
-            p = resolve_template_path(fake_825_root, mapping.dim)
+            p = resolve_template_path(fake_825_root, mapping.dim, cache=template_cache)
             if not p.exists():
                 raise SystemExit(f"Missing Dimension template for {prefix}: {p}")
             if not p.suffix.lower() in (".xlsx", ".xlsm"):
                 raise SystemExit(f"Dimension template must be .xlsx/.xlsm: {p}")
+    
+    return template_cache
 
 
 # ------------------------------- FS Utilities ------------------------------ #
@@ -790,8 +1001,13 @@ def find_main_po_pdf(source_dir: Path) -> Optional[Path]:
     if not candidates:
         return None
 
+    # Pre-compile regex for row matching (used multiple times)
+    row_pattern = re.compile(r"^\s*\d+\s+[A-Za-z0-9._\-]+\s+.+?\s+\d+(?:\s|$)", re.MULTILINE)
+    
     def score_pdf(pdf_path: Path) -> Tuple[int, int]:
         try:
+            # Cache file size to avoid multiple stat calls
+            file_size = pdf_path.stat().st_size
             with pdfplumber.open(str(pdf_path)) as pdf:
                 pages_text = []
                 for idx, page in enumerate(pdf.pages):
@@ -801,10 +1017,10 @@ def find_main_po_pdf(source_dir: Path) -> Optional[Path]:
                 txt = "\n".join(pages_text)
                 low = txt.lower()
                 headers = ("quantity" in low and "version" in low and ("item" in low or "details" in low))
-                # A lightweight row matcher
-                row_matches = len(re.findall(r"^\s*\d+\s+[A-Za-z0-9._\-]+\s+.+?\s+\d+(?:\s|$)", txt, flags=re.MULTILINE))
+                # Use pre-compiled pattern
+                row_matches = len(row_pattern.findall(txt))
                 score = (100 if headers else 0) + min(row_matches, 20) * 5
-                return (score, pdf_path.stat().st_size)
+                return (score, file_size)
         except Exception:
             return (0, pdf_path.stat().st_size if pdf_path.exists() else 0)
 
@@ -830,8 +1046,14 @@ def find_best_items_pdf(source_dir: Path) -> Optional[Path]:
     if not pdfs:
         return None
 
+    # Pre-compile regex patterns for better performance
+    row_pattern = re.compile(r"^\s*\d+\s+[A-Za-z0-9._\-]+\s+.+?\s+\d+(?:\s|$)", re.MULTILINE)
+    po_pattern = re.compile(r"PO\d{3,5}", re.IGNORECASE)
+    
     def score_pdf(pdf_path: Path) -> Tuple[int, int]:
         try:
+            # Cache file size to avoid multiple stat calls
+            file_size = pdf_path.stat().st_size
             with pdfplumber.open(str(pdf_path)) as pdf:
                 pages_text = []
                 for idx, page in enumerate(pdf.pages):
@@ -841,12 +1063,13 @@ def find_best_items_pdf(source_dir: Path) -> Optional[Path]:
                 txt = "\n".join(pages_text)
                 low = txt.lower()
                 headers = ("quantity" in low and "version" in low and ("item" in low or "details" in low))
-                row_matches = len(re.findall(r"^\s*\d+\s+[A-Za-z0-9._\-]+\s+.+?\s+\d+(?:\s|$)", txt, flags=re.MULTILINE))
+                # Use pre-compiled pattern
+                row_matches = len(row_pattern.findall(txt))
                 score = (100 if headers else 0) + min(row_matches, 20) * 5
                 # Small boost if filename contains PO####
-                if re.search(r"PO\d{3,5}", pdf_path.name, flags=re.IGNORECASE):
+                if po_pattern.search(pdf_path.name):
                     score += 5
-                return (score, pdf_path.stat().st_size)
+                return (score, file_size)
         except Exception:
             return (0, pdf_path.stat().st_size if pdf_path.exists() else 0)
 
@@ -881,13 +1104,21 @@ def make_po_target_dirs(cmd_dir: Path, po_number: str, lot_number: str, *, dry_r
 
 
 def count_tree_entries(root: Path) -> Tuple[int, int]:
+    """Count files and directories in a tree. Optimized to avoid stat calls where possible."""
     files = 0
     dirs = 0
-    for _path in root.rglob("*"):
-        if _path.is_dir():
-            dirs += 1
-        else:
-            files += 1
+    # Use os.walk which is faster than rglob for counting
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirs += len(dirnames)
+            files += len(filenames)
+    except Exception:
+        # Fallback to rglob if walk fails
+        for _path in root.rglob("*"):
+            if _path.is_dir():
+                dirs += 1
+            else:
+                files += 1
     return files, dirs
 
 
@@ -922,7 +1153,8 @@ def copy_sc_folder(source_dir: Path, dest_dir: Path, reset: bool, logger: loggin
         logger.debug(f"S&C destination already exists (no reset): {dest_dir}")
 
     # Verify counts only when not dry-run
-    if not dry_run:
+    # Skip verification if reset=False and dest already exists (assume it's correct)
+    if not dry_run and (reset or not dest_dir.exists()):
         src_files, src_dirs = count_tree_entries(source_dir)
         dst_files, dst_dirs = count_tree_entries(dest_dir)
         if (src_files, src_dirs) != (dst_files, dst_dirs):
@@ -1155,6 +1387,7 @@ def process_po_source(
     templates: TemplatesConfig,
     source_dir: Path,
     dry_run: bool,
+    template_cache: Optional[Dict[str, Path]] = None,
 ) -> None:
     # Identify main PO and Form-019
     # Try best-items PDF first; fallback to PO-named PDF
@@ -1218,11 +1451,14 @@ def process_po_source(
     # Datasets
     combined, per_prefix, numeric_items = build_datasets(items)
 
-    # Template selection
+    # Template selection - use cached path if available
     coc_filename = templates.coc_sterile if cfg.sterile else templates.coc_nonsterile
     if not coc_filename:
         raise SystemExit("CoC template filename not present in template map")
-    coc_template_path = resolve_template_path(cfg.fake_825_root, coc_filename)
+    # Try cache first, fallback to direct resolution
+    coc_template_path = template_cache.get(coc_filename) if template_cache else None
+    if coc_template_path is None:
+        coc_template_path = resolve_template_path(cfg.fake_825_root, coc_filename, cache=template_cache)
     if not coc_template_path.exists():
         raise SystemExit(f"CoC template missing: {coc_template_path}")
 
@@ -1231,6 +1467,7 @@ def process_po_source(
     generate_coc(po_folders, combined, cfg.job_number, coc_template_path, coc_out, logger, dry_run)
 
     # Generate Final QC & Dim per prefix for letter-prefixed items only
+    # Use cached template paths to avoid repeated directory walks
     generated_paths: List[Path] = []
     for prefix, items_for_prefix in per_prefix.items():
         mapping = templates.per_prefix.get(prefix)
@@ -1238,8 +1475,17 @@ def process_po_source(
             # No mapping for this prefix; allowed, just skip
             logger.warning(f"No template mapping for prefix {prefix}; skipping QC/Dim")
             continue
-        final_qc_tmpl = resolve_template_path(cfg.fake_825_root, mapping.final_qc) if mapping.final_qc else None
-        dim_tmpl = resolve_template_path(cfg.fake_825_root, mapping.dim) if mapping.dim else None
+        # Use cache if available (from run_builder)
+        final_qc_tmpl = None
+        if mapping.final_qc:
+            final_qc_tmpl = template_cache.get(mapping.final_qc) if template_cache else None
+            if final_qc_tmpl is None:
+                final_qc_tmpl = resolve_template_path(cfg.fake_825_root, mapping.final_qc, cache=template_cache)
+        dim_tmpl = None
+        if mapping.dim:
+            dim_tmpl = template_cache.get(mapping.dim) if template_cache else None
+            if dim_tmpl is None:
+                dim_tmpl = resolve_template_path(cfg.fake_825_root, mapping.dim, cache=template_cache)
         generated = generate_excel_for_prefix(
             po_folders,
             prefix,
@@ -1332,7 +1578,8 @@ def run_builder(cfg: Config, verbose: bool, dry_run: bool, progress_callback: Op
 
     # Templates map
     templates_cfg = parse_templates_map(cfg.templates_map_path, logger)
-    validate_templates_exist(templates_cfg, cfg.fake_825_root)
+    # Cache template paths during validation for reuse
+    template_cache = validate_templates_exist(templates_cfg, cfg.fake_825_root)
 
     # Process each PO in parallel (up to 4 workers for better throughput)
     any_errors: List[str] = []
@@ -1341,7 +1588,7 @@ def run_builder(cfg: Config, verbose: bool, dry_run: bool, progress_callback: Op
     def process_one_po(src: Path) -> Tuple[str, Optional[str]]:
         """Process a single PO and return (name, error_or_none)."""
         try:
-            process_po_source(cfg, logger, templates_cfg, src, dry_run)
+            process_po_source(cfg, logger, templates_cfg, src, dry_run, template_cache)
             return (src.name, None)
         except SystemExit as e:
             return (src.name, str(e))

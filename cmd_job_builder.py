@@ -926,7 +926,7 @@ def resolve_template_path(root: Path, filename: Optional[str], cache: Optional[D
     return result
 
 
-def validate_templates_exist(templates: TemplatesConfig, fake_825_root: Path, template_cache: Optional[Dict[str, Path]] = None) -> Dict[str, Path]:
+def validate_templates_exist(templates: TemplatesConfig, fake_825_root: Path, template_cache: Optional[Dict[str, Path]] = None, logger: Optional[logging.Logger] = None) -> Dict[str, Path]:
     """Validate templates exist and return a cache of resolved paths.
     
     Returns a dict mapping template filenames to their resolved Path objects.
@@ -945,19 +945,23 @@ def validate_templates_exist(templates: TemplatesConfig, fake_825_root: Path, te
         if not path.exists():
             raise SystemExit(f"Missing CoC (Non-Sterile) template: {path}")
 
-    # Validate prefix templates
+    # Validate prefix templates (only warn if missing, don't fail - they may not be used in this job)
     for prefix, mapping in templates.per_prefix.items():
         if mapping.final_qc:
             p = resolve_template_path(fake_825_root, mapping.final_qc, cache=template_cache)
             if not p.exists():
-                raise SystemExit(f"Missing Final QC template for {prefix}: {p}")
-            if not p.suffix.lower() in (".xlsx", ".xlsm"):
+                # Only warn, don't fail - template might not be needed for this job
+                if logger:
+                    logger.warning(f"Final QC template for {prefix} not found (may not be used): {p}")
+            elif not p.suffix.lower() in (".xlsx", ".xlsm"):
                 raise SystemExit(f"Final QC template must be .xlsx/.xlsm: {p}")
         if mapping.dim:
             p = resolve_template_path(fake_825_root, mapping.dim, cache=template_cache)
             if not p.exists():
-                raise SystemExit(f"Missing Dimension template for {prefix}: {p}")
-            if not p.suffix.lower() in (".xlsx", ".xlsm"):
+                # Only warn, don't fail - template might not be needed for this job
+                if logger:
+                    logger.warning(f"Dimension template for {prefix} not found (may not be used): {p}")
+            elif not p.suffix.lower() in (".xlsx", ".xlsm"):
                 raise SystemExit(f"Dimension template must be .xlsx/.xlsm: {p}")
     
     return template_cache
@@ -1489,18 +1493,27 @@ def process_po_source(
             dim_tmpl = template_cache.get(mapping.dim) if template_cache else None
             if dim_tmpl is None:
                 dim_tmpl = resolve_template_path(cfg.fake_825_root, mapping.dim, cache=template_cache)
-        generated = generate_excel_for_prefix(
-            po_folders,
-            prefix,
-            items_for_prefix,
-            final_qc_tmpl,
-            dim_tmpl,
-            po_folders.mbr_dir,
-            cfg.job_number,
-            logger,
-            dry_run,
-        )
-        generated_paths.extend(generated)
+        # Only generate if templates exist (validate here when actually needed)
+        if final_qc_tmpl and not final_qc_tmpl.exists():
+            logger.warning(f"Final QC template for {prefix} not found: {final_qc_tmpl}; skipping")
+            final_qc_tmpl = None
+        if dim_tmpl and not dim_tmpl.exists():
+            logger.warning(f"Dimension template for {prefix} not found: {dim_tmpl}; skipping")
+            dim_tmpl = None
+        
+        if final_qc_tmpl or dim_tmpl:
+            generated = generate_excel_for_prefix(
+                po_folders,
+                prefix,
+                items_for_prefix,
+                final_qc_tmpl,
+                dim_tmpl,
+                po_folders.mbr_dir,
+                cfg.job_number,
+                logger,
+                dry_run,
+            )
+            generated_paths.extend(generated)
 
     # Write audit CSV
     audit_csv = write_item_audit_csv(po_folders.mbr_dir, combined, logger, dry_run)
@@ -1582,7 +1595,7 @@ def run_builder(cfg: Config, verbose: bool, dry_run: bool, progress_callback: Op
     # Templates map
     templates_cfg = parse_templates_map(cfg.templates_map_path, logger)
     # Cache template paths during validation for reuse
-    template_cache = validate_templates_exist(templates_cfg, cfg.fake_825_root)
+    template_cache = validate_templates_exist(templates_cfg, cfg.fake_825_root, logger=logger)
 
     # Process each PO in parallel (up to 4 workers for better throughput)
     any_errors: List[str] = []
